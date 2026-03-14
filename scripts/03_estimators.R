@@ -1,6 +1,6 @@
 ### List of estimator functions
 
-source("./scripts/02_utilities.R")
+source(here::here("scripts", "02_utilities.R"))
 
 ## Difference-in-means estimator
 # Data: Tibble

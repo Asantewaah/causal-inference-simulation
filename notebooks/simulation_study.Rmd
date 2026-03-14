@@ -1,0 +1,315 @@
+---
+title: "Causal Inference in High-Dimensional Observational Data"
+subtitle: "A Comparative Simulation Study of TMLE and C-TMLE Estimators"
+author: "Juliet Asantewaa Sarpong"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 9,
+  fig.height = 5
+)
+
+library(here)
+```
+
+------------------------------------------------------------------------
+
+# Introduction
+
+This notebook presents a comparative simulation study of four causal inference estimators for the **Average Treatment Effect (ATE)** in observational data settings. The focus is on high-dimensional settings where the number of covariates is large relative to sample size — a common challenge in healthcare and genomic research.
+
+## The Causal Inference Problem
+
+In observational studies, we cannot randomly assign treatment. Patients who receive a treatment may systematically differ from those who don't, in ways that also affect the outcome. This is **confounding**, and naively comparing treatment groups produces biased causal estimates.
+
+The **structural causal model** underlying this study assumes:
+
+-   **W** — a vector of pre-treatment covariates (potential confounders)
+-   **A** — binary treatment indicator (A = 1 treated, A = 0 control)
+-   **Y** — continuous outcome
+
+The **Average Treatment Effect** is defined as:
+
+$$\text{ATE} = E[Y(1) - Y(0)]$$
+
+where Y(a) denotes the potential outcome under treatment a. Under the standard causal assumptions (consistency, positivity, and conditional exchangeability), the ATE is identified from observed data as:
+
+$$\text{ATE} = E_W[E[Y \mid A=1, W] - E[Y \mid A=0, W]]$$
+
+## Estimators Compared
+
+Four estimators are benchmarked:
+
+| Estimator | Abbreviation | Key Feature |
+|------------------------|------------------------|------------------------|
+| Targeted Maximum Likelihood Estimation | TMLE | Doubly robust; semiparametrically efficient |
+| Collaborative TMLE (Greedy) | C-TMLE Greedy | Greedy forward selection of propensity score covariates |
+| Collaborative TMLE (Lasso) | C-TMLE1 | Lasso regularisation path for propensity score |
+| Collaborative TMLE (Gradient) | C-TMLE0 | Gradient-based collaborative selection |
+
+All estimators use **cross-validated LASSO/elastic net** (`glmnet`) for nuisance model estimation, making them suitable for high-dimensional settings. Standard errors are computed via the **efficient influence function**, providing valid inference without parametric assumptions.
+
+------------------------------------------------------------------------
+
+# Setup
+
+## Load Scripts
+
+```{r source_scripts}
+# Source auxiliary scripts
+source(here("scripts", "01_data_generating_processes.R"))
+source(here("scripts", "02_utilities.R"))
+source(here("scripts", "03_estimators.R"))
+source(here("scripts", "04_estimators_highdim.R"))
+```
+
+## Load Packages
+
+```{r load_packages}
+# Data manipulation
+library(tidyverse)
+library(MASS)
+library(survey)
+library(boot)
+
+# Visualisation
+library(ggplot2)
+library(skimr)
+
+# Learning algorithms
+library(glm2)
+library(glmnet)
+library(randomForest)
+library(SuperLearner)
+```
+
+------------------------------------------------------------------------
+
+# Simulation Design
+
+## Data Generating Process (Study 3 — High-Dimensional Sparse)
+
+The primary simulation uses a **high-dimensional sparse DGP** with p = 100 covariates drawn from a multivariate normal distribution with Toeplitz covariance structure (ρ = 0.5), mimicking correlated genomic or clinical covariates.
+
+Key design choices:
+
+-   **p = 100** covariates, but only **k = 10** are truly predictive of the outcome, and **k = 10** of the treatment — **sparse signal** in both mechanisms
+-   Treatment A is binary, generated from a logistic model with sparse coefficients
+-   Outcome Y is continuous: `Y = 2·A + W·γ + ε`, where ε \~ N(0,1)
+-   **True ATE = 2** (known by construction, enabling bias evaluation)
+
+```{r preview_data}
+# Generate a single dataset for illustration
+set.seed(42)
+data_example <- sim3(n = 1000, p = 100, rho = 0.5, k = 10, k2 = 10)
+
+# Preview structure
+cat("Dataset dimensions:", nrow(data_example), "observations,", ncol(data_example), "variables\n")
+cat("Treatment prevalence:", round(mean(data_example$A), 3), "\n")
+cat("Outcome mean:", round(mean(data_example$Y), 3), "\n")
+cat("Outcome SD:", round(sd(data_example$Y), 3), "\n")
+```
+
+```{r skim_data}
+# Summary of key variables
+data_example %>%
+  dplyr::select(W1, W2, W3, A, Y) %>%
+  skimr::skim()
+```
+
+------------------------------------------------------------------------
+
+# Single Dataset Results
+
+Before running the full Monte Carlo study, we verify each estimator on a single dataset to confirm correct implementation and reasonable point estimates.
+
+## Define Estimator List
+
+```{r estimator_list}
+# Wrap estimators with true_value = 2 (known ATE for Study 3)
+estimator_list <- list(
+  "TMLE"          = function(data) estimate_TMLE_glmnet(data, true_value = 2),
+  "Greedy C-TMLE" = function(data) estimate_GREEDY_CTMLE_glmnet(data, true_value = 2),
+  "C-TMLE0"       = function(data) estimate_CTMLE0_glmnet(data, true_value = 2),
+  "C-TMLE1"       = function(data) estimate_CTMLE1_glmnet(data, true_value = 2)
+)
+```
+
+## Single Dataset Estimates
+
+```{r single_results}
+set.seed(123)
+data_test <- sim3(n = 1000, p = 100)
+
+# Evaluate all estimators on a single dataset
+single_results <- evaluate_estimators(data_test, estimator_list)
+
+single_results %>%
+  dplyr::select(Algorithm, est_init = Initial.Est, est = Estimate, se = Standard.Error,
+         ci_lower = CI_Lower, ci_upper = CI_Upper, bias = Bias) %>%
+  knitr::kable(digits = 3, caption = "Single dataset results — True ATE = 2")
+```
+
+All four estimators should recover an estimate close to the true ATE = 2. Initial estimates (before the targeting step) and targeted estimates (after) are both shown, allowing us to see the impact of the TMLE fluctuation step.
+
+------------------------------------------------------------------------
+
+# Monte Carlo Simulation
+
+## Running the Study
+
+The Monte Carlo study runs **k = 100 replications** with **n = 5,000** observations per dataset. This sample size is deliberately large to allow the asymptotic properties of the estimators to manifest clearly.
+
+> ⚠️ **Note:** The full Monte Carlo run is computationally intensive (\~30–60 minutes). Pre-computed results are loaded below. To re-run from scratch, uncomment the `MC_est()` call.
+
+```{r monte_carlo, eval=FALSE}
+# --- OPTIONAL: Re-run the full Monte Carlo study ---
+# combined_results_ <- MC_est(
+#   k          = 100,
+#   sample_no  = 5000,
+#   simulation = sim3,
+#   est_list   = estimator_list
+# )
+# write.csv(combined_results_, "../results/ctmle_glmnet.csv", row.names = FALSE)
+```
+
+```{r load_results}
+# Load pre-computed Monte Carlo results
+combined_results_ <- read.csv("../results/ctmle_glmnet.csv")
+
+cat("Loaded", nrow(combined_results_), "rows across", 
+    n_distinct(combined_results_$Algorithm), "estimators\n")
+```
+
+## Aggregate Performance Metrics
+
+```{r mc_summary}
+true_value <- 2
+
+res <- MC_res(combined_results_, true_value = true_value)
+
+res %>%
+  dplyr::select(Algorithm, Mean_Est, Mean_Bias, Mean_Var, Coverage, Mean_MSE) %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "Monte Carlo Summary — k=100 replications, n=5,000, True ATE = 2",
+    col.names = c("Estimator", "Mean Estimate", "Mean Bias", 
+                  "Mean Variance", "CI Coverage", "MSE")
+  )
+```
+
+**Interpreting the metrics:**
+
+-   **Mean Estimate** — should be close to 2.0; deviation indicates bias
+-   **Mean Bias** — directly measures systematic error; closer to 0 is better
+-   **Mean Variance** — average squared standard error across replications
+-   **CI Coverage** — proportion of 95% CIs containing the true ATE; should be close to 0.95
+-   **MSE** — combines bias and variance; primary summary of overall performance
+
+------------------------------------------------------------------------
+
+# Visualisation
+
+## Distribution of ATE Estimates by Estimator
+
+The density plots below show the sampling distribution of each estimator's ATE estimate across 100 Monte Carlo replications. The dashed vertical line marks the **true ATE = 2**.
+
+```{r dist_per_estimator, fig.height=6}
+hist_per_est(
+  combined_results_,
+  xlimits    = range(combined_results_$Estimate),
+  true_value = true_value
+) +
+  coord_cartesian(xlim = c(1, 3)) +
+  labs(caption = "Dashed line = True ATE (2.0). Tighter distributions indicate lower variance.")
+```
+
+A well-performing estimator will have its distribution **centred on 2.0** (low bias) and **narrow** (low variance). C-TMLE variants are expected to show reduced variance compared to standard TMLE in this high-dimensional sparse setting, due to their collaborative variable selection in the propensity score model.
+
+## Overlaid Estimate Distributions
+
+```{r dist_all, fig.height=5}
+hist_all(
+  combined_results_,
+  xlimits    = range(combined_results_$Estimate),
+  true_value = true_value
+) +
+  coord_cartesian(xlim = c(1, 3)) +
+  labs(caption = "All four estimators overlaid. Dashed line = True ATE (2.0).")
+```
+
+## Confidence Interval Coverage
+
+The plots below show the distribution of CI lower and upper bounds across replications. For a well-calibrated estimator, the true ATE (2.0) should fall within approximately 95% of the plotted intervals.
+
+```{r ci_distribution, fig.height=6}
+hist_per_est_CI(
+  combined_results_,
+  xlimits = c(min(combined_results_$CI_Lower), max(combined_results_$CI_Upper))
+) +
+  coord_cartesian(xlim = c(1, 3)) +
+  labs(caption = "Distribution of 95% CI bounds. Dashed line = True ATE (2.0).")
+```
+
+## Point Estimates with Confidence Intervals
+
+The forest plot below shows **mean estimates ± mean CI bounds** for each estimator, ordered by CI width. Narrower CIs with centres close to 2.0 represent the best-performing estimators.
+
+```{r ci_forest_plot, fig.height=4}
+plot_est_CI(
+  combined_results_,
+  custom_title = "Mean ATE Estimates with 95% Confidence Intervals",
+  xlimits      = c(min(combined_results_$CI_Lower), max(combined_results_$CI_Upper)),
+  true_value   = true_value
+) +
+  labs(caption = "Dashed line = True ATE (2.0). Ordered by CI width (widest first).")
+```
+
+------------------------------------------------------------------------
+
+# Discussion
+
+## Key Findings
+
+The simulation results illustrate several important properties of these estimators in high-dimensional sparse settings:
+
+**Bias:** All four estimators are approximately unbiased when n = 5,000, reflecting their doubly-robust and semiparametrically efficient construction. In smaller samples (n = 1,000), the C-TMLE variants tend to show reduced bias relative to standard TMLE, due to the collaborative regularisation of the propensity score.
+
+**Variance:** The C-TMLE estimators demonstrate a favourable bias-variance trade-off compared to standard TMLE. By selecting a regularised propensity score model collaboratively with the outcome model, C-TMLE avoids overfitting the treatment mechanism — a key source of variance inflation in high-dimensional settings.
+
+**Coverage:** Influence function-based confidence intervals achieve coverage close to the nominal 95% level for all estimators at n = 5,000, validating the inference procedure.
+
+**Practical recommendation:** In high-dimensional sparse settings with large n, C-TMLE1 (Lasso regularisation path) offers the best overall performance, combining computational tractability with strong statistical properties.
+
+## Limitations and Extensions
+
+-   Results are specific to the Toeplitz covariance structure and sparse signal assumed here; performance may differ under denser or differently structured confounding
+-   SuperLearner-based nuisance estimation (not implemented here) may further improve performance by data-adaptively combining multiple learners
+-   Extension to settings with **missing data** or **non-ignorable missingness** — the focus of the broader PhD research — introduces additional complexity not addressed in this simulation
+
+------------------------------------------------------------------------
+
+# Session Information
+
+```{r session_info}
+sessionInfo()
+```
+
+------------------------------------------------------------------------
+
+*This simulation study is part of PhD research at the University of Edinburgh, School of Mathematics. For questions or collaboration, contact [asantewaahsarpong\@gmail.com](mailto:asantewaahsarpong@gmail.com).*

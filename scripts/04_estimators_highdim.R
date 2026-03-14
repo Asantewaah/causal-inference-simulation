@@ -1,7 +1,7 @@
 ### List of high-dimensional estimator functions(glmnet-based TMLE and C-TMLE)
 
-source("scripts/01_data_generating_processes.R")
-source("scripts/02_utilities.R")
+source(here::here("scripts", "01_data_generating_processes.R"))
+source(here::here("scripts", "02_utilities.R"))
 
 estimate_TMLE_glmnet <- function(data, alpha = 0.05, true_value = 1,
                           Qform = as.formula(paste("Y ~ A +", paste(covariates, collapse = " + "))),
