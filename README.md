@@ -168,7 +168,7 @@ The simulation work here serves to validate and compare the performance of these
 PhD Candidate, Statistics — University of Edinburgh  
 📧 asantewaahsarpong@gmail.com  
 🐙 [github.com/Asantewaah](https://github.com/Asantewaah)  
-💼 [linkedin.com/in/asantewaah-sarpong](https://www.linkedin.com/in/asantewaah-sarpong/)
+💼 [linkedin.com/in/asantewaah-sarpong](https://www.linkedin.com/in/juliet-asantewaa-sarpong/)
 
 ---
 
